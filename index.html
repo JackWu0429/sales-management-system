@@ -3054,11 +3054,66 @@
                 padding: 3px 5px;
             }
         }
+
+        /* 加载指示器样式 */
+        .loading-indicator {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            z-index: 10000;
+        }
+
+        .loading-content {
+            text-align: center;
+            color: white;
+        }
+
+        .loading-content h3 {
+            margin: 20px 0 10px 0;
+            font-size: 24px;
+            font-weight: 600;
+        }
+
+        .loading-content p {
+            margin: 0;
+            opacity: 0.9;
+            font-size: 16px;
+        }
+
+        .loading-spinner {
+            width: 50px;
+            height: 50px;
+            border: 4px solid rgba(255, 255, 255, 0.3);
+            border-top: 4px solid #ffffff;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+            margin: 0 auto;
+        }
+
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
     </style>
 </head>
 <body>
+    <!-- 加载指示器 -->
+    <div id="loadingIndicator" class="loading-indicator">
+        <div class="loading-content">
+            <div class="loading-spinner"></div>
+            <h3>🏢 销售管理系统</h3>
+            <p>正在初始化，请稍候...</p>
+        </div>
+    </div>
+
     <!-- 登录模态框 -->
-    <div id="authModal" class="auth-modal">
+    <div id="authModal" class="auth-modal" style="display: none;">
         <div class="auth-content">
             <div class="auth-header">
                 <h2>🏢 销售管理系统</h2>
@@ -3526,10 +3581,7 @@
                                 <span>🔧</span>
                                 <span>修复数据</span>
                             </button>
-                            <button class="btn btn-tertiary" onclick="debugSettingsData()">
-                                <span>🔍</span>
-                                <span>调试检查</span>
-                            </button>
+                            
                             <button class="btn btn-danger" onclick="resetAllSettings()">
                                 <span>🔄</span>
                                 <span>重置所有设置</span>
@@ -3636,8 +3688,9 @@
                 }
             } catch (error) {
                 console.warn('⚠️ Supabase初始化失败，将使用本地模式:', error);
-                showAuthError('连接服务器失败，已切换到离线模式');
+                hideLoadingIndicator();
                 showMainApp(); // 降级到本地模式
+                showToast('连接服务器失败，已切换到离线模式', 'warning');
             }
         }
 
@@ -3649,6 +3702,13 @@
         function getSalesData() {
             if (salesData === null) {
                 salesData = JSON.parse(localStorage.getItem('salesData')) || [];
+                
+                // 确保所有记录的数值字段都是有效的数字
+                salesData = salesData.map(record => ({
+                    ...record,
+                    amount: Number(record.amount) || 0,
+                    contractAmount: Number(record.contractAmount) || 0
+                }));
             }
             return salesData;
         }
@@ -3772,18 +3832,30 @@
                 }
             } catch (error) {
                 console.error('检查认证状态失败:', error);
+                hideLoadingIndicator();
+                showAuthModal();
                 showAuthError('认证检查失败，请刷新页面重试');
+            }
+        }
+        
+        // 隐藏加载指示器
+        function hideLoadingIndicator() {
+            const loadingIndicator = document.getElementById('loadingIndicator');
+            if (loadingIndicator) {
+                loadingIndicator.style.display = 'none';
             }
         }
         
         // 显示认证模态框
         function showAuthModal() {
+            hideLoadingIndicator();
             document.getElementById('authModal').style.display = 'flex';
             document.getElementById('mainContainer').style.display = 'none';
         }
         
         // 显示主应用
         function showMainApp() {
+            hideLoadingIndicator();
             document.getElementById('authModal').style.display = 'none';
             document.getElementById('mainContainer').style.display = 'block';
             initializeMainApp();
@@ -3973,29 +4045,86 @@
                 console.log('✅ 已登出');
                 showAuthModal();
                 
-                // 清理本地数据
+                // 清理本地数据和权限信息
                 salesData = null;
                 systemSettings = null;
+                userPermissions = { role: 'sales', can_view_all: false, can_edit_all: false, can_delete_all: false, can_manage_settings: false };
                 
             } catch (error) {
                 console.error('登出失败:', error);
                 alert('登出失败，请刷新页面');
             }
         }
+
+        // 强制刷新用户权限
+        async function forceRefreshPermissions() {
+            if (!isSupabaseReady || !currentUser) {
+                showToast('请先登录', 'error');
+                return;
+            }
+            
+            try {
+                console.log('🔄 强制刷新用户权限...');
+                
+                // 重新获取权限信息
+                const { data, error } = await supabase.rpc('check_user_permissions');
+                
+                if (error) {
+                    console.error('❌ 权限刷新失败:', error);
+                    showToast('权限刷新失败', 'error');
+                    return;
+                }
+                
+                if (data && data.length > 0) {
+                    const oldRole = userPermissions.role;
+                    userPermissions = {
+                        role: data[0].role || 'sales',
+                        can_view_all: data[0].can_view_all || false,
+                        can_edit_all: data[0].can_edit_all || false,
+                        can_delete_all: data[0].can_delete_all || false,
+                        can_manage_settings: data[0].can_manage_settings || false
+                    };
+                    
+                    console.log('✅ 权限已强制刷新:', userPermissions);
+                    console.log(`🔄 角色变化: ${oldRole} → ${userPermissions.role}`);
+                    
+                    // 重新加载用户资料显示
+                    await loadUserProfile();
+                    
+                    // 重新加载数据
+                    await loadSalesRecordsFromDatabase();
+                    loadTableData();
+                    updateStatistics();
+                    
+                    showToast(`权限已刷新！角色: ${userPermissions.role}`, 'success');
+                } else {
+                    console.log('❌ 未获取到权限数据');
+                    showToast('未获取到权限数据', 'warning');
+                }
+                
+            } catch (error) {
+                console.error('❌ 强制刷新权限失败:', error);
+                showToast('权限刷新失败', 'error');
+            }
+        }
+
+
         
         // 加载用户资料
         async function loadUserProfile() {
             if (!currentUser) return;
             
             try {
+                // 修复406错误：使用maybeSingle()代替single()，并改善错误处理
                 const { data, error } = await supabase
                     .from('user_profiles')
                     .select('*')
                     .eq('user_id', currentUser.id)
-                    .single();
+                    .maybeSingle(); // 使用maybeSingle()避免406错误
                 
-                if (error && error.code !== 'PGRST116') { // PGRST116 = no rows returned
-                    throw error;
+                if (error) {
+                    console.warn('加载用户资料时出现警告:', error);
+                    // 不抛出错误，继续使用默认信息
                 }
                 
                 // 更新用户状态显示
@@ -4003,11 +4132,23 @@
                 if (userStatusElement) {
                     const userName = data?.full_name || currentUser.user_metadata?.full_name || currentUser.email;
                     const userRole = data?.role || currentUser.user_metadata?.role || 'sales';
-                    userStatusElement.textContent = `${userName} (${getRoleDisplayName(userRole)})`;
+                    
+                    // 加载权限信息并显示
+                    await loadUserPermissions();
+                    const permissionIcon = userPermissions.can_view_all ? '👨‍💼' : (userPermissions.role === 'manager' ? '👔' : '👤');
+                    userStatusElement.textContent = `${permissionIcon} ${userName} (${getRoleDisplayName(userRole)})`;
+                    console.log('✅ 用户状态已更新:', userName, getRoleDisplayName(userRole), userPermissions);
                 }
                 
             } catch (error) {
                 console.error('加载用户资料失败:', error);
+                // 降级处理：使用基本用户信息
+                const userStatusElement = document.getElementById('currentUser');
+                if (userStatusElement) {
+                    const userName = currentUser.user_metadata?.full_name || currentUser.email;
+                    const userRole = currentUser.user_metadata?.role || 'sales';
+                    userStatusElement.textContent = `${userName} (${getRoleDisplayName(userRole)})`;
+                }
             }
         }
         
@@ -4075,7 +4216,7 @@
 
         // 性能优化：页面加载时分阶段初始化
         document.addEventListener('DOMContentLoaded', function() {
-            console.log('页面开始初始化...');
+            console.log('🚀 页面开始初始化...');
             
             // 立即初始化Supabase
             initializeSupabase();
@@ -4091,13 +4232,25 @@
             }
             
             try {
+                // 准备要保存的数据，移除前端生成的id，让数据库自动生成
+                const recordToSave = {
+                    frontend_id: record.id, // 保存前端ID作为参考
+                    date: record.date,
+                    customer: record.customer,
+                    customer_source: record.customerSource,
+                    business_type: record.businessType,
+                    amount: Number(record.amount) || 0,
+                    income_type: record.incomeType,
+                    salesperson: record.salesperson,
+                    contract_amount: Number(record.contractAmount) || 0,
+                    remarks: record.remarks || '',
+                    user_id: currentUser.id,
+                    created_by: currentUser.email
+                };
+                
                 const { data, error } = await supabase
                     .from('sales_records')
-                    .insert([{
-                        ...record,
-                        user_id: currentUser.id,
-                        created_by: currentUser.email
-                    }]);
+                    .insert([recordToSave]);
                 
                 if (error) throw error;
                 
@@ -4106,11 +4259,52 @@
                 
             } catch (error) {
                 console.error('❌ 保存销售记录到云端失败:', error);
+                console.error('错误详情:', error);
                 return false;
             }
         }
         
-        // 从数据库加载销售记录
+        // 全局变量：用户权限信息
+        let userPermissions = {
+            role: 'sales',
+            can_view_all: false,
+            can_edit_all: false,
+            can_delete_all: false,
+            can_manage_settings: false
+        };
+
+        // 加载用户权限信息
+        async function loadUserPermissions() {
+            if (!isSupabaseReady || !currentUser) {
+                return userPermissions;
+            }
+            
+            try {
+                const { data, error } = await supabase.rpc('check_user_permissions');
+                
+                if (error) throw error;
+                
+                if (data && data.length > 0) {
+                    userPermissions = {
+                        role: data[0].role || 'sales',
+                        can_view_all: data[0].can_view_all || false,
+                        can_edit_all: data[0].can_edit_all || false,
+                        can_delete_all: data[0].can_delete_all || false,
+                        can_manage_settings: data[0].can_manage_settings || false
+                    };
+                    
+                    console.log('✅ 用户权限加载完成:', userPermissions);
+                }
+                
+                return userPermissions;
+                
+            } catch (error) {
+                console.error('❌ 加载用户权限失败:', error);
+                return userPermissions;
+            }
+        }
+
+        // 从数据库加载销售记录（支持分级权限）
         async function loadSalesRecordsFromDatabase() {
             if (!isSupabaseReady || !currentUser) {
                 console.warn('Supabase未就绪或用户未登录，使用本地数据');
@@ -4118,19 +4312,56 @@
             }
             
             try {
-                const { data, error } = await supabase
+                // 先加载用户权限
+                await loadUserPermissions();
+                
+                // 根据权限级别构建查询
+                let query = supabase
                     .from('sales_records')
                     .select('*')
-                    .eq('user_id', currentUser.id)
                     .order('created_at', { ascending: false });
+                
+                // 销售人员只查看自己的记录，管理员和经理通过RLS策略自动过滤
+                if (userPermissions.role === 'sales') {
+                    // RLS策略会自动处理权限过滤，这里不需要额外过滤
+                    console.log('🔒 销售人员权限：只显示自己的记录');
+                } else if (userPermissions.role === 'manager') {
+                    console.log('👔 销售经理权限：显示团队记录');
+                } else if (userPermissions.role === 'admin') {
+                    console.log('👨‍💼 管理员权限：显示所有记录');
+                }
+                
+                const { data, error } = await query;
                 
                 if (error) throw error;
                 
-                console.log(`✅ 从云端加载了 ${data.length} 条销售记录`);
+                console.log(`✅ 从云端加载了 ${data.length} 条销售记录 (${userPermissions.role}权限)`);
                 
-                // 合并云端数据和本地数据
-                salesData = data || [];
-                localStorage.setItem('salesData', JSON.stringify(salesData));
+                // 确保云端数据的数值字段都是有效数字，并映射字段名
+                const cleanedData = (data || []).map(record => ({
+                    id: record.frontend_id || record.id, // 使用前端ID或数据库ID
+                    date: record.date,
+                    customer: record.customer,
+                    customerSource: record.customer_source,
+                    businessType: record.business_type,
+                    amount: Number(record.amount) || 0,
+                    incomeType: record.income_type,
+                    salesperson: record.salesperson,
+                    contractAmount: Number(record.contract_amount) || 0,
+                    remarks: record.remarks || '',
+                    created_by: record.created_by || ''
+                }));
+                
+                // 根据权限级别处理本地数据存储
+                if (userPermissions.role === 'sales') {
+                    // 销售人员：只保存自己的数据到本地
+                    salesData = cleanedData;
+                    localStorage.setItem('salesData', JSON.stringify(salesData));
+                } else {
+                    // 管理员和经理：不存储到本地，避免权限泄露
+                    salesData = cleanedData;
+                    console.log('ℹ️ 管理级权限数据不存储到本地存储');
+                }
                 
                 return salesData;
                 
@@ -4152,20 +4383,24 @@
                 localStorage.setItem('salesData', JSON.stringify(localData));
             }
             
-            // 再从云端删除
+            // 再从云端删除（权限由RLS策略控制）
             if (isSupabaseReady && currentUser) {
                 try {
+                    // RLS策略会自动检查删除权限
                     const { error } = await supabase
                         .from('sales_records')
                         .delete()
-                        .eq('id', recordId)
-                        .eq('user_id', currentUser.id);
+                        .eq('frontend_id', recordId);
                     
                     if (error) throw error;
                     console.log('✅ 云端记录已删除');
                     
                 } catch (error) {
                     console.error('❌ 删除云端记录失败:', error);
+                    // 如果是权限错误，给出友好提示
+                    if (error.message.includes('permission') || error.message.includes('policy')) {
+                        showToast('❌ 权限不足，无法删除此记录', 'error');
+                    }
                 }
             }
             
@@ -4190,11 +4425,16 @@
                 console.log('🔄 开始数据同步...');
                 showToast('正在同步数据...', 'info');
                 
-                // 1. 获取云端数据
-                const { data: cloudData, error } = await supabase
+                // 1. 获取云端数据（根据权限级别）
+                let query = supabase
                     .from('sales_records')
-                    .select('*')
-                    .eq('user_id', currentUser.id);
+                    .select('*');
+                
+                // 确保权限信息已加载
+                await loadUserPermissions();
+                
+                // RLS策略会自动根据用户角色过滤数据
+                const { data: cloudData, error } = await query;
                 
                 if (error) throw error;
                 
@@ -4202,13 +4442,22 @@
                 const localData = getSalesData();
                 
                 // 3. 合并数据（以云端数据为准，补充本地独有数据）
-                const cloudIds = new Set(cloudData.map(item => item.id));
-                const localOnlyData = localData.filter(item => !cloudIds.has(item.id));
+                const cloudFrontendIds = new Set(cloudData.map(item => item.frontend_id).filter(id => id));
+                const localOnlyData = localData.filter(item => !cloudFrontendIds.has(item.id));
                 
                 // 4. 上传本地独有数据到云端
                 if (localOnlyData.length > 0) {
                     const uploadData = localOnlyData.map(item => ({
-                        ...item,
+                        frontend_id: item.id,
+                        date: item.date,
+                        customer: item.customer,
+                        customer_source: item.customerSource,
+                        business_type: item.businessType,
+                        amount: Number(item.amount) || 0,
+                        income_type: item.incomeType,
+                        salesperson: item.salesperson,
+                        contract_amount: Number(item.contractAmount) || 0,
+                        remarks: item.remarks || '',
                         user_id: currentUser.id,
                         created_by: currentUser.email
                     }));
@@ -4222,8 +4471,21 @@
                     showToast(`已上传 ${localOnlyData.length} 条本地记录到云端`, 'success');
                 }
                 
-                // 5. 更新本地数据
-                const mergedData = [...cloudData, ...localOnlyData];
+                // 5. 更新本地数据，确保数值字段正确并映射字段名
+                const mappedCloudData = cloudData.map(record => ({
+                    id: record.frontend_id || record.id,
+                    date: record.date,
+                    customer: record.customer,
+                    customerSource: record.customer_source,
+                    businessType: record.business_type,
+                    amount: Number(record.amount) || 0,
+                    incomeType: record.income_type,
+                    salesperson: record.salesperson,
+                    contractAmount: Number(record.contract_amount) || 0,
+                    remarks: record.remarks || ''
+                }));
+                
+                const mergedData = [...mappedCloudData, ...localOnlyData];
                 salesData = mergedData;
                 localStorage.setItem('salesData', JSON.stringify(salesData));
                 
@@ -4350,10 +4612,10 @@
                     <td>${record.customer}</td>
                     <td>${record.customerSource || '-'}</td>
                     <td>${record.businessType}</td>
-                    <td>¥${record.amount.toLocaleString()}</td>
+                    <td>¥${(Number(record.amount) || 0).toLocaleString()}</td>
                     <td>${record.incomeType}</td>
                     <td>${record.salesperson}</td>
-                    <td>¥${record.contractAmount.toLocaleString()}</td>
+                    <td>¥${(Number(record.contractAmount) || 0).toLocaleString()}</td>
                     <td title="${record.remarks || '-'}">${record.remarks || '-'}</td>
                     <td>
                         <button class="delete-btn" onclick="deleteRecord(${record.id})">删除</button>
@@ -4459,10 +4721,10 @@
                     <td>${highlightedCustomer}</td>
                     <td>${record.customerSource || ''}</td>
                     <td>${record.businessType}</td>
-                    <td>¥${record.amount.toLocaleString()}</td>
+                    <td>¥${(Number(record.amount) || 0).toLocaleString()}</td>
                     <td>${record.incomeType}</td>
                     <td>${record.salesperson}</td>
-                    <td>¥${(record.contractAmount || record.amount).toLocaleString()}</td>
+                    <td>¥${(Number(record.contractAmount) || Number(record.amount) || 0).toLocaleString()}</td>
                     <td>${record.remarks || ''}</td>
                     <td>
                         <button class="btn btn-danger" onclick="deleteRecord('${record.id}')">删除</button>
@@ -4626,10 +4888,10 @@
             };
             
             // 更新显示的数值
-            if (statsElements.totalAmount) statsElements.totalAmount.textContent = `¥${totalAmount.toLocaleString()}`;
+            if (statsElements.totalAmount) statsElements.totalAmount.textContent = `¥${(Number(totalAmount) || 0).toLocaleString()}`;
             if (statsElements.totalDeals) statsElements.totalDeals.textContent = totalDeals;
-            if (statsElements.avgDeal) statsElements.avgDeal.textContent = `¥${avgDealAmount.toLocaleString()}`;
-            if (statsElements.monthAmount) statsElements.monthAmount.textContent = `¥${monthAmount.toLocaleString()}`;
+            if (statsElements.avgDeal) statsElements.avgDeal.textContent = `¥${(Number(avgDealAmount) || 0).toLocaleString()}`;
+            if (statsElements.monthAmount) statsElements.monthAmount.textContent = `¥${(Number(monthAmount) || 0).toLocaleString()}`;
             if (statsElements.monthDeals) statsElements.monthDeals.textContent = monthDeals;
             if (statsElements.completion) {
                 const completionRate = totalDeals > 0 ? ((monthDeals / totalDeals) * 100).toFixed(1) : 0;
@@ -4718,7 +4980,7 @@
             const prevRevenue = previousPeriodData.reduce((sum, record) => sum + record.amount, 0);
             const revenueChange = prevRevenue > 0 ? ((totalRevenue - prevRevenue) / prevRevenue * 100) : 0;
             
-            document.getElementById('kpiTotalRevenue').textContent = `¥${totalRevenue.toLocaleString()}`;
+            document.getElementById('kpiTotalRevenue').textContent = `¥${(Number(totalRevenue) || 0).toLocaleString()}`;
             updateKPIChange('kpiRevenueChange', revenueChange);
             
             // 成交笔数
@@ -4763,7 +5025,7 @@
             }, 0);
             const unpaidAmountChange = prevUnpaidAmount > 0 ? ((unpaidAmount - prevUnpaidAmount) / prevUnpaidAmount * 100) : 0;
             
-            document.getElementById('kpiUnpaidAmount').textContent = `¥${unpaidAmount.toLocaleString()}`;
+            document.getElementById('kpiUnpaidAmount').textContent = `¥${(Number(unpaidAmount) || 0).toLocaleString()}`;
             updateKPIChange('kpiUnpaidAmountChange', unpaidAmountChange);
             
             // 欠款数量（合同金额大于收入金额的记录数）
@@ -4856,8 +5118,8 @@
                 statItem.innerHTML = `
                     <span class="stat-label-compact">${month}</span>
                     <div>
-                        <span class="stat-value-compact">¥${data.amount.toLocaleString()}</span>
-                        <span class="stat-percentage">(${data.count}笔, 均¥${avg.toLocaleString()})</span>
+                        <span class="stat-value-compact">¥${(Number(data.amount) || 0).toLocaleString()}</span>
+                        <span class="stat-percentage">(${data.count}笔, 均¥${(Number(avg) || 0).toLocaleString()})</span>
                     </div>
                 `;
                 monthlyTrendsDiv.appendChild(statItem);
@@ -4905,8 +5167,8 @@
                 statItem.innerHTML = `
                     <span class="stat-label-compact">${week}</span>
                     <div>
-                        <span class="stat-value-compact">¥${data.amount.toLocaleString()}</span>
-                        <span class="stat-percentage">(${data.count}笔, 均¥${avg.toLocaleString()})</span>
+                        <span class="stat-value-compact">¥${(Number(data.amount) || 0).toLocaleString()}</span>
+                        <span class="stat-percentage">(${data.count}笔, 均¥${(Number(avg) || 0).toLocaleString()})</span>
                     </div>
                 `;
                 weeklyTrendsDiv.appendChild(statItem);
@@ -4968,7 +5230,7 @@
                     <div class="legend-item">
                         <div class="legend-color" style="background: ${colors[index % colors.length]}"></div>
                         <span class="legend-label">${type}</span>
-                        <span class="legend-value">¥${businessTypeData[type].toLocaleString()}</span>
+                        <span class="legend-value">¥${(Number(businessTypeData[type]) || 0).toLocaleString()}</span>
                     </div>
                 `).join('');
             }
@@ -5056,7 +5318,7 @@
                             <div class="ranking-info">
                                 <div class="ranking-name">${person}</div>
                                 <div class="ranking-stats">
-                                    <div class="ranking-amount">¥${amount.toLocaleString()}</div>
+                                    <div class="ranking-amount">¥${(Number(amount) || 0).toLocaleString()}</div>
                                     <div class="ranking-count">${count}笔</div>
                                 </div>
                             </div>
@@ -5103,16 +5365,16 @@
                 } else {
                     container.innerHTML = `
                         <div class="unpaid-summary">
-                            <div class="unpaid-total">¥${totalUnpaid.toLocaleString()}</div>
+                            <div class="unpaid-total">¥${(Number(totalUnpaid) || 0).toLocaleString()}</div>
                             <div class="unpaid-label">总未收款金额 • ${unpaidRecords.length}个客户</div>
                         </div>
                         ${unpaidRecords.slice(0, 8).map(record => `
                             <div class="unpaid-detail">
                                 <div class="unpaid-customer">${record.customer} (${record.salesperson})</div>
                                 <div class="unpaid-amounts">
-                                    <span class="contract-amount">合同: ¥${record.contractAmount.toLocaleString()}</span>
-                                    <span class="received-amount">已收: ¥${record.receivedAmount.toLocaleString()}</span>
-                                    <span class="unpaid-amount">未收: ¥${record.unpaidAmount.toLocaleString()}</span>
+                                    <span class="contract-amount">合同: ¥${(Number(record.contractAmount) || 0).toLocaleString()}</span>
+                                    <span class="received-amount">已收: ¥${(Number(record.receivedAmount) || 0).toLocaleString()}</span>
+                                    <span class="unpaid-amount">未收: ¥${(Number(record.unpaidAmount) || 0).toLocaleString()}</span>
                                 </div>
                             </div>
                         `).join('')}
@@ -5325,17 +5587,17 @@
                 if (avgOrderValue > 50000) {
                     insights.push({
                         icon: '👑',
-                        text: `平均订单价值达 ¥${avgOrderValue.toLocaleString()}，高端客户集中。建议深耕大客户市场，提供定制化服务。`
+                        text: `平均订单价值达 ¥${(Number(avgOrderValue) || 0).toLocaleString()}，高端客户集中。建议深耕大客户市场，提供定制化服务。`
                     });
                 } else if (avgOrderValue > 20000) {
                     insights.push({
                         icon: '💼',
-                        text: `平均订单价值 ¥${avgOrderValue.toLocaleString()}，中高端客户为主。建议平衡发展，扩大客户群体。`
+                        text: `平均订单价值 ¥${(Number(avgOrderValue) || 0).toLocaleString()}，中高端客户为主。建议平衡发展，扩大客户群体。`
                     });
                 } else if (avgOrderValue < 5000) {
                     insights.push({
                         icon: '📈',
-                        text: `平均订单价值仅 ¥${avgOrderValue.toLocaleString()}，客单价偏低。建议开发高价值产品，提升客单价。`
+                        text: `平均订单价值仅 ¥${(Number(avgOrderValue) || 0).toLocaleString()}，客单价偏低。建议开发高价值产品，提升客单价。`
                     });
                 }
                 
@@ -5783,13 +6045,13 @@
                     sessionStorage.setItem('adminAuthenticated', 'true');
                     alert('✅ 验证成功！已获得管理员权限。\n\n注意：权限将在24小时后自动过期。');
                     
-                    // 显示管理员状态
-                    updateAdminStatus();
+                    // 管理员权限功能已迁移到云端用户系统
+                    console.log('ℹ️ 管理员权限功能已迁移到云端用户系统');
                     
-                    // 设置24小时后自动过期
+                    // 设置24小时后自动过期（保留用于兼容性）
                     setTimeout(() => {
                         sessionStorage.removeItem('adminAuthenticated');
-                        updateAdminStatus();
+                        console.log('ℹ️ 旧版管理员权限已清理');
                         console.log('管理员权限已过期');
                     }, 24 * 60 * 60 * 1000);
                 }
@@ -5828,22 +6090,16 @@
             }
         }
 
-        // 管理员权限管理
+        // 管理员权限管理 - 已迁移到云端用户系统
         function updateAdminStatus() {
-            const adminStatus = document.getElementById('adminStatus');
-            const isAuthenticated = sessionStorage.getItem('adminAuthenticated') === 'true';
-            
-            if (isAuthenticated) {
-                adminStatus.style.display = 'flex';
-            } else {
-                adminStatus.style.display = 'none';
-            }
+            // 该功能已被云端用户认证系统替代，保留函数避免调用错误
+            console.log('ℹ️ 管理员权限已迁移到云端用户系统');
         }
 
         function logoutAdmin() {
             if (confirm('确定要退出管理员权限吗？\n\n退出后需要重新输入密码才能访问受保护的页面。\n权限有效期：24小时')) {
                 sessionStorage.removeItem('adminAuthenticated');
-                updateAdminStatus();
+                console.log('ℹ️ 旧版管理员权限已退出');
                 
                 // 如果当前在受保护页面，自动切换到数据展示页面
                 const currentTab = document.querySelector('.tab.active');
@@ -5857,9 +6113,9 @@
             }
         }
 
-        // 页面加载时检查管理员状态
+        // 页面加载时检查管理员状态（已迁移到云端用户系统）
         document.addEventListener('DOMContentLoaded', function() {
-            updateAdminStatus();
+            console.log('ℹ️ 管理员状态检查已迁移到云端用户系统');
         });
 
         // 销售励志名言库
@@ -5947,7 +6203,7 @@
                 <div class="celebration-main-info">
                     <div class="celebration-highlight-amount">
                         <div class="amount-label">本笔收入</div>
-                        <div class="amount-value">¥${recordData.amount.toLocaleString()}</div>
+                        <div class="amount-value">¥${(Number(recordData.amount) || 0).toLocaleString()}</div>
                     </div>
                     <div class="celebration-key-info">
                         <div class="key-info-item">
@@ -5982,7 +6238,7 @@
                             ${recordData.contractAmount ? `
                             <div class="mini-info-item">
                                 <span class="mini-label">合同</span>
-                                <span class="mini-value">¥${recordData.contractAmount.toLocaleString()}</span>
+                                <span class="mini-value">¥${(Number(recordData.contractAmount) || 0).toLocaleString()}</span>
                             </div>
                             ` : ''}
                         </div>
@@ -5995,7 +6251,7 @@
                             <h5 class="card-title">🏆 历史总业绩</h5>
                             <div class="card-stats">
                                 <div class="card-stat-item">
-                                    <div class="card-stat-number">¥${totalAmount.toLocaleString()}</div>
+                                    <div class="card-stat-number">¥${(Number(totalAmount) || 0).toLocaleString()}</div>
                                     <div class="card-stat-desc">总收入</div>
                                 </div>
                                 <div class="card-stat-item">
@@ -6010,7 +6266,7 @@
                             <h5 class="card-title">📅 本月业绩</h5>
                             <div class="card-stats">
                                 <div class="card-stat-item">
-                                    <div class="card-stat-number">¥${monthAmount.toLocaleString()}</div>
+                                    <div class="card-stat-number">¥${(Number(monthAmount) || 0).toLocaleString()}</div>
                                     <div class="card-stat-desc">本月收入</div>
                                 </div>
                                 <div class="card-stat-item">
@@ -6690,7 +6946,7 @@
                 ctx.font = '24px Arial, "Microsoft YaHei"';
                 ctx.fillText('本次收入', canvas.width/2, incomeY + 30);
                 ctx.font = 'bold 48px Arial, "Microsoft YaHei"';
-                ctx.fillText(`¥${recordData.amount.toLocaleString()}`, canvas.width/2, incomeY + 80);
+                ctx.fillText(`¥${(Number(recordData.amount) || 0).toLocaleString()}`, canvas.width/2, incomeY + 80);
                 
                 // 5. 详细信息区域
                 let detailY = incomeY + incomeHeight + 60;
@@ -7663,7 +7919,7 @@
                             <div>
                                 <div style="font-weight: bold; font-size: 16px; color: #333;">👤 ${person.name}</div>
                                 <div style="font-size: 13px; color: #666; margin-top: 4px;">
-                                    💰 基础工资: ¥${person.baseSalary.toLocaleString()} | 
+                                    💰 基础工资: ¥${(Number(person.baseSalary) || 0).toLocaleString()} | 
                                     📊 提成方式: ${commissionText}
                                 </div>
                             </div>
@@ -7972,11 +8228,11 @@
             const totalSalary = person.baseSalary + commission;
             
             alert(`📊 ${person.name} 本月业绩统计\n\n` +
-                  `🏆 销售总额: ¥${totalSales.toLocaleString()}\n` +
+                  `🏆 销售总额: ¥${(Number(totalSales) || 0).toLocaleString()}\n` +
                   `📈 成交笔数: ${recordCount} 笔\n` +
-                  `💰 平均订单: ¥${avgSale.toLocaleString()}\n` +
-                  `🎯 提成金额: ¥${commission.toLocaleString()}\n` +
-                  `💵 预计总工资: ¥${totalSalary.toLocaleString()}`);
+                  `💰 平均订单: ¥${(Number(avgSale) || 0).toLocaleString()}\n` +
+                  `🎯 提成金额: ¥${(Number(commission) || 0).toLocaleString()}\n` +
+                  `💵 预计总工资: ¥${(Number(totalSalary) || 0).toLocaleString()}`);
         }
         
         // 切换提成输入框显示
@@ -8576,71 +8832,7 @@
             alert(message);
         }
         
-        // 调试设置数据加载
-        function debugSettingsData() {
-            console.log('=== 系统设置调试信息 ===');
-            console.log('当前系统设置:', systemSettings);
-            console.log('业务类型数量:', systemSettings.businessTypes?.length || 0);
-            console.log('收入类型数量:', systemSettings.incomeTypes?.length || 0);
-            console.log('客户来源数量:', systemSettings.customerSources?.length || 0);
-            console.log('销售人员数量:', systemSettings.salespeople?.length || 0);
-            
-            // 检查localStorage
-            const storedSettings = localStorage.getItem('systemSettings');
-            console.log('localStorage中的设置:', storedSettings);
-            
-            // 检查表单元素是否存在
-            const formElements = [
-                'customerSource',
-                'salesperson'
-            ];
-            
-            formElements.forEach(id => {
-                const element = document.getElementById(id);
-                console.log(`表单元素 ${id}:`, element ? '存在' : '❌不存在');
-                if (element) {
-                    console.log(`  - 选项数量: ${element.options.length}`);
-                    console.log(`  - 选项内容:`, Array.from(element.options).map(opt => opt.text));
-                }
-            });
-            
-            // 检查设置界面DOM元素是否存在
-            const settingsElements = [
-                'businessTypesList',
-                'incomeTypesList', 
-                'customerSourcesList',
-                'salespersonList'
-            ];
-            
-            settingsElements.forEach(id => {
-                const element = document.getElementById(id);
-                console.log(`设置界面元素 ${id}:`, element ? '存在' : '❌不存在');
-                if (element) {
-                    console.log(`  - 内容长度: ${element.innerHTML.length}`);
-                    console.log(`  - 子元素数量: ${element.children.length}`);
-                }
-            });
-            
-            // 显示调试摘要
-            const summary = `
-🔍 调试摘要：
-• 业务类型: ${systemSettings.businessTypes?.length || 0} 项
-• 收入类型: ${systemSettings.incomeTypes?.length || 0} 项  
-• 客户来源: ${systemSettings.customerSources?.length || 0} 项
-• 销售人员: ${systemSettings.salespeople?.length || 0} 人
-• 表单客户来源选项: ${document.getElementById('customerSource')?.options.length || 0} 个
-• 表单销售人员选项: ${document.getElementById('salesperson')?.options.length || 0} 个
 
-详细信息请查看控制台日志。
-            `;
-            
-            alert(summary);
-            
-            // 尝试重新加载
-            console.log('重新加载设置数据...');
-            loadSettingsData();
-            updateFormOptions();
-        }
 
         // 测试阶梯式提成计算（用于验证计算是否正确）
         function testLadderCommission() {
@@ -8709,10 +8901,10 @@
 
 
         // 将必要函数挂载到全局
-        window.debugSettingsData = debugSettingsData;
         window.toggleCardContent = toggleCardContent;
         window.syncDataConsistency = syncDataConsistency;
         window.fixDataConsistency = fixDataConsistency;
+        window.forceRefreshPermissions = forceRefreshPermissions;
     </script>
 
     <!-- 喜报弹窗 -->
@@ -8751,5 +8943,3 @@
     </footer>
 </body>
 </html>
-
-
